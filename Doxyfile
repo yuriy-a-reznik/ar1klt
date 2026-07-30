@@ -1,0 +1,16 @@
+# Doxygen configuration for AR1KLT
+PROJECT_NAME           = "AR1KLTs"
+PROJECT_BRIEF          = "Exact fast AR(1) KLT modules, N = 2..8 (C89)"
+OUTPUT_DIRECTORY       = docs
+INPUT                  = include src test README.md
+USE_MDFILE_AS_MAINPAGE = README.md
+FILE_PATTERNS          = *.h *.c *.md
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+JAVADOC_AUTOBRIEF      = YES
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = YES
