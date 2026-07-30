@@ -1,7 +1,7 @@
 # AR1KLT
 
 Exact fast algorithms for the Karhunen–Loève transform (KLT) of stationary
-AR(1) sources, at short lengths **N = 2, …, 8**, in strict ANSI C (C89).
+AR(1) sources, at short lengths **N = 2, …, 8**.
 
 The KLT of an AR(1) source with correlation coefficient `rho` is the
 eigenvector basis of its covariance matrix `R_N(rho) = [rho^|i-j|]` — the
