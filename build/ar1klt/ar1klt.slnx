@@ -3,5 +3,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="ar1klt.vcxproj" />
+  <Project Path="../ar1klt_gen/ar1klt_gen.vcxproj" Id="cb919efa-67d2-4a9d-bb99-78bc87a7dead" />
+  <Project Path="ar1klt.vcxproj" Id="314233e7-aa64-435b-88ab-c7e8e9ec967e" />
 </Solution>

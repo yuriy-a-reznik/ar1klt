@@ -1,54 +1,71 @@
 /*!
- *  \file ar1klt.c
- * 
- *  \brief Implementation of the exact short-length AR(1) KLT modules (N = 2..8) 
- * 
+ *  \file       ar1klt.c
+ *  \brief      Implementation of the exact short-length AR(1) KLT modules (N = 2..8).
+ *
  *  \details
- *  This library implements the exact short-length KLT algorithms of
- *  Y. A. Reznik, "Direct Factorization of the Karhunen-Loeve Transform of AR(1) Sources", Section 5.
- * 
- *  Internal layout:
- * 
- *  Design-time constants are computed in ar1klt_init(): 
- *     rotation angles from closed-form arctangents; roots of the cubic and quartic characteristic 
- *     equations from the Cardano and Ferrari radical formulas, followed by a few Newton polishing iterations; 
- *     dense stage rows from the Cauchy forms of the rank-one (secular) and arrowhead eigenvector solutions, 
- *     normalized to unit length.
+ *  This file implements the short-length modules of Section V of the paper
  *
- *  Run-time processing in ar1klt_apply():
- *     follows the printed stage chains literally.
+ *      Y. Reznik, "Direct Factorization of the Karhunen-Loeve Transform of AR(1) Sources",
+ *      submitted to the IEEE Transactions on Signal Processing, July 2026.
  *
- *  All polynomial coefficient arrays are stored low order first, and all polynomials handled here are monic 
- *  with exclusively real roots (they are characteristic polynomials of small symmetric matrices).
+ *  Design-time constants are computed in ar1klt_init().  Rotation angles come from closed-form arctangents.
+ *  Roots of the cubic and quartic characteristic equations come from the Cardano and Ferrari radical
+ *  formulas, followed by a few Newton polishing iterations.  Rows of the dense stages follow the Cauchy
+ *  forms of the rank-one (secular) and arrowhead eigenvector solutions of the paper, normalized to unit
+ *  length.  Run-time processing in ar1klt_apply() executes the printed stage chains literally.
  *
- *  \author    Yuriy A. Reznik <yreznik@mit.edu>
- *  \copyright Copyright (C) 2026 Yuriy A. Reznik
- *  \license   MIT License (see LICENSE file).
+ *  All polynomial coefficient arrays in this file are stored with the lowest-order coefficient first, and
+ *  every polynomial handled here is monic with exclusively real roots, because each one is the
+ *  characteristic polynomial of a small symmetric matrix.
+ *
+ *  \version    1.1
+ *  \date       August 2026
+ *  \author     Yuriy A. Reznik <yreznik@mit.edu>
+ *  \copyright  (C) 2026 Yuriy A. Reznik.
+ *  \license    MIT License (see the LICENSE file).
  */
 
 #include <math.h>
 #include <stddef.h>
+
 #include "ar1klt.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#ifndef SQRT2
 #define SQRT2 1.41421356237309504880
+#endif
 
-/********************
- *
- * Small helpers
- *
+/* ********************************************************************************************** */
+/*  Small helpers                                                                                 */
+/* ********************************************************************************************** */
+
+/*!
+ *  \brief      Apply the plane rotation G(phi) to a coordinate pair.
+ * 
+ *  \param[in]  c   Cosine of the rotation angle phi.
+ *  \param[in]  s   Sine of the rotation angle phi.
+ *  \param[in]  a   First input coordinate.
+ *  \param[in]  b   Second input coordinate.
+ *  \param[out] u   First output coordinate, u = a*c + b*s.
+ *  \param[out] v   Second output coordinate, v = -a*s + b*c.
  */
-
-/*! Plane rotation G(phi): (a,b) -> (a c + b s, -a s + b c). */
 static void rot(double c, double s, double a, double b, double *u, double *v)
 {
     *u =  c * a + s * b;
     *v = -s * a + c * b;
 }
 
-/*! Clamp x into [lo, hi]. */
+/*!
+ *  \brief      Clamp a value into a closed interval.
+ * 
+ *  \param[in]  x    Value to clamp.
+ *  \param[in]  lo   Lower bound of the interval.
+ *  \param[in]  hi   Upper bound of the interval.
+ * 
+ *  \return     The value x limited to the interval [lo, hi].
+ */
 static double clampd(double x, double lo, double hi)
 {
     if (x < lo) return lo;
@@ -56,20 +73,32 @@ static double clampd(double x, double lo, double hi)
     return x;
 }
 
-/*! Real cube root (sign-preserving). */
+/*!
+ *  \brief      Real (sign-preserving) cube root, provided because C89 offers no cbrt() function.
+ * 
+ *  \param[in]  x   Argument, of either sign.
+ * 
+ *  \return     The real cube root of x.
+ */
 static double cbrt_r(double x)
 {
     if (x >= 0.0) return pow(x, 1.0 / 3.0);
     return -pow(-x, 1.0 / 3.0);
 }
 
-/*********************
- * 
- * Polynomial utilities
- *
- */
+/* ********************************************************************************************** */
+/*  Polynomial utilities (coefficients low order first)                                           */
+/* ********************************************************************************************** */
 
-/*! Polynomial product c = a * b; lc = la + lb - 1. */
+/*!
+ *  \brief      Multiply two polynomials stored with the lowest-order coefficient first.
+ * 
+ *  \param[in]  a    Coefficients of the first factor.
+ *  \param[in]  la   Number of coefficients of the first factor (degree + 1).
+ *  \param[in]  b    Coefficients of the second factor.
+ *  \param[in]  lb   Number of coefficients of the second factor.
+ *  \param[out] c    Coefficients of the product; the array must hold la + lb - 1 values.
+ */
 static void pmul(const double *a, int la, const double *b, int lb, double *c)
 {
     int i, j;
@@ -79,14 +108,28 @@ static void pmul(const double *a, int la, const double *b, int lb, double *c)
             c[i + j] += a[i] * b[j];
 }
 
-/*! In-place scaled add: a += s * b (lb <= la). */
+/*!
+ *  \brief      Add a scalar multiple of one polynomial to another, in place: a := a + s * b.
+ * 
+ *  \param[in,out] a    Coefficients of the accumulating polynomial; its length must be at least lb.
+ *  \param[in]     s    Scalar multiplier applied to the second polynomial.
+ *  \param[in]     b    Coefficients of the polynomial being added.
+ *  \param[in]     lb   Number of coefficients of the polynomial being added.
+ */
 static void paxpy(double *a, double s, const double *b, int lb)
 {
     int i;
     for (i = 0; i < lb; i++) a[i] += s * b[i];
 }
 
-/*! Evaluate polynomial of length len at t (Horner). */
+/*!
+ *  \brief      Evaluate a polynomial at a point by the Horner scheme.
+ * 
+ *  \param[in]  c     Coefficients, lowest order first.
+ *  \param[in]  len   Number of coefficients (degree + 1).
+ *  \param[in]  t     Evaluation point.
+ *  \return     The value of the polynomial at t.
+ */
 static double peval(const double *c, int len, double t)
 {
     int i;
@@ -95,7 +138,14 @@ static double peval(const double *c, int len, double t)
     return v;
 }
 
-/*! Evaluate derivative of polynomial of length len at t. */
+/*!
+ *  \brief      Evaluate the first derivative of a polynomial at a point.
+ * 
+ *  \param[in]  c     Coefficients of the polynomial, lowest order first.
+ *  \param[in]  len   Number of coefficients (degree + 1).
+ *  \param[in]  t     Evaluation point.
+ *  \return     The value of the derivative at t.
+ */
 static double pdeval(const double *c, int len, double t)
 {
     int i;
@@ -104,7 +154,14 @@ static double pdeval(const double *c, int len, double t)
     return v;
 }
 
-/*! Newton-polish nr roots of the polynomial (5 iterations each). */
+/*!
+ *  \brief      Polish approximate real roots of a polynomial by a few Newton iterations.
+ * 
+ *  \param[in]     c     Coefficients of the polynomial, lowest order first.
+ *  \param[in]     len   Number of coefficients (degree + 1).
+ *  \param[in,out] r     Array of nr approximate roots, refined in place.
+ *  \param[in]     nr    Number of roots to polish.
+ */
 static void polish(const double *c, int len, double *r, int nr)
 {
     int i, it;
@@ -117,7 +174,12 @@ static void polish(const double *c, int len, double *r, int nr)
     }
 }
 
-/*! Sort n reals ascending (insertion sort). */
+/*!
+ *  \brief      Sort an array of real numbers into ascending order (insertion sort).
+ * 
+ *  \param[in,out] r   Array of values, sorted in place.
+ *  \param[in]     n   Number of values in the array.
+ */
 static void sort_asc(double *r, int n)
 {
     int i, j;
@@ -128,18 +190,22 @@ static void sort_asc(double *r, int n)
     }
 }
 
-/***********************
- * 
- * Radical root solvers (all-real-root cases):
- * 
- **/
+/* ********************************************************************************************** */
+/*  Radical root solvers (all-real-root cases)                                                    */
+/* ********************************************************************************************** */
 
 /*!
- *  \brief Roots of a monic cubic equation t^3 + c[2] t^2 + c[1] t + c[0] = 0 
- *         (coefficients low order first, c[3] = 1), via Cardano.
+ *  \brief      Real roots of a monic cubic polynomial, by the Cardano formulas.
  *
- *  Handles both the three-real-root (trigonometric) and the one-real-root (cbrt) branch; returns the number of real roots
- *  written to r[] in ascending order.
+ *  \details
+ *  The polynomial is t^3 + c[2] t^2 + c[1] t + c[0], with coefficients stored lowest order first and the
+ *  leading coefficient equal to one.  The routine handles both the three-real-root case, through the
+ *  trigonometric form of the Cardano solution, and the one-real-root case, through the cube-root form.
+ *  All computed roots are polished by Newton iterations and returned in ascending order.
+ *
+ *  \param[in]  c   Four coefficients of the monic cubic, lowest order first (c[3] = 1).
+ *  \param[out] r   Computed real roots, in ascending order.
+ *  \return     The number of real roots written to r (either 1 or 3).
  */
 static int cubic_roots(const double *c, double r[3])
 {
@@ -169,15 +235,24 @@ static int cubic_roots(const double *c, double r[3])
         }
         n = 1;
     }
-	/* polish the roots (5 Newton iterations each) and sort ascending */
     polish(c, 4, r, n);
     sort_asc(r, n);
     return n;
 }
 
 /*!
- *  \brief Roots of a monic quartic equation t^4 + c[3] t^3 + ... + c[0] = 0,
- *         with four real roots, via Ferrari; ascending order in r[].
+ *  \brief      The four real roots of a monic quartic polynomial, by the Ferrari method.
+ *
+ *  \details
+ *  The polynomial is t^4 + c[3] t^3 + ... + c[0], with coefficients stored lowest order first and the
+ *  leading coefficient equal to one; the caller guarantees that all four roots are real, because the
+ *  polynomial is the characteristic polynomial of a small symmetric matrix.  The routine depresses the
+ *  quartic, solves the resolvent cubic, splits the result into two quadratic factors, clamps small negative
+ *  discriminants caused by rounding, polishes all roots by Newton iterations, and returns them in
+ *  ascending order.
+ *
+ *  \param[in]  c   Five coefficients of the monic quartic, lowest order first (c[4] = 1).
+ *  \param[out] r   The four real roots, in ascending order.
  */
 static void quartic_roots(const double *c, double r[4])
 {
@@ -214,20 +289,24 @@ static void quartic_roots(const double *c, double r[4])
         r[2] = (-s + d2) / 2.0 + sh;
         r[3] = (-s - d2) / 2.0 + sh;
     }
-    /* polish the roots (5 Newton iterations each) and sort ascending */
     polish(c, 5, r, 4);
     sort_asc(r, 4);
 }
 
-/********************
- * 
- * Characteristic polynomials of the Section-5 modules
- * 
- */
+/* ********************************************************************************************** */
+/*  Characteristic polynomials of the Section-5 modules                                           */
+/* ********************************************************************************************** */
 
 /*!
- *  \brief Residual cubic chi(t) = (1-t)[(e-t)^2 - rho^2] - rho^2 (e-t),
- *         e = 1 + rho^2, returned monic (low order first, length 4).
+ *  \brief      Coefficients of the residual cubic characteristic polynomial of the paper, in monic form.
+ *
+ *  \details
+ *  The paper defines chi(t) = (1-t)[(e-t)^2 - rho^2] - rho^2 (e-t) with e = 1 + rho^2, whose leading term
+ *  is -t^3.  This routine returns the monic normalization, which is the NEGATION of the paper's chi; the
+ *  callers that combine chi with other polynomials account for this sign explicitly.
+ *
+ *  \param[in]  rho   AR(1) correlation coefficient.
+ *  \param[out] c     Four coefficients of the monic cubic, lowest order first (c[3] = 1).
  */
 static void chi_residual(double rho, double *c)
 {
@@ -242,7 +321,14 @@ static void chi_residual(double rho, double *c)
     c[0] = -t3[0]; c[1] = -t3[1]; c[2] = -t3[2]; c[3] = 1.0; /* monic  */
 }
 
-/*! \brief Parity quadratic (1-t)(tau-t) - rho^2, monic (length 3). */
+/*!
+ *  \brief      Coefficients of a parity quadratic (1-t)(tau-t) - rho^2 of the paper, in monic form.
+ * 
+ *  \param[in]  rho   AR(1) correlation coefficient.
+ *  \param[in]  tau   Branch constant: tau = 1 - rho + rho^2 for the sum branch, or 1 + rho + rho^2 for the
+ *                    difference branch.
+ *  \param[out] c     Three coefficients of the monic quadratic, lowest order first (c[2] = 1).
+ */
 static void chi_parity(double rho, double tau, double *c)
 {
     c[0] = tau - rho * rho;
@@ -250,15 +336,22 @@ static void chi_parity(double rho, double tau, double *c)
     c[2] = 1.0;
 }
 
-/********************
- *
- * Dense stage assembly
- *
- */
+/* ********************************************************************************************** */
+/*  Dense stage assembly                                                                          */
+/* ********************************************************************************************** */
 
 /*!
- * \brief Rank-one secular rows: Q[i][j] ~ p[j] / (mu[j] - nu[i]),
- *        normalized; m poles, m roots.
+ *  \brief      Assemble a rank-one secular eigenvector stage in its row-normalized Cauchy form.
+ *
+ *  \details
+ *  Row i of the stage is proportional to (p_1/(mu_1 - nu_i), ..., p_m/(mu_m - nu_i)) and is normalized to
+ *  unit length, following the Cauchy form of the secular eigenvectors in the paper.
+ *
+ *  \param[in]  m    Stage order (number of poles and of roots).
+ *  \param[in]  mu   Poles mu_1 < ... < mu_m (eigenvalues of the unperturbed diagonal).
+ *  \param[in]  p    Components of the perturbation vector; all must be nonzero.
+ *  \param[in]  nu   Roots nu_1 < ... < nu_m of the secular equation.
+ *  \param[out] Q    Assembled orthogonal stage, row i associated with root nu_i.
  */
 static void secular_stage(int m, const double *mu, const double *p, const double *nu, double Q[4][4])
 {
@@ -275,7 +368,18 @@ static void secular_stage(int m, const double *mu, const double *p, const double
 }
 
 /*!
- * \brief Arrowhead rows: A[i][j] ~ sqrt(2) rho q[j] / (dl[j] - nu[i]) for j < m, last entry 1; normalized; m poles, m+1 roots.
+ *  \brief      Assemble an arrowhead eigenvector stage in its row-normalized Cauchy-plus-column form.
+ *
+ *  \details
+ *  Row i of the stage is proportional to (sqrt(2) rho q_1/(dl_1 - nu_i), ..., sqrt(2) rho q_m/(dl_m - nu_i), 1)
+ *  and is normalized to unit length, following the arrowhead eigenvector form of the paper.
+ *
+ *  \param[in]  m     Number of arrowhead shaft entries (the stage has order m + 1).
+ *  \param[in]  rho   AR(1) correlation coefficient.
+ *  \param[in]  dl    Shaft diagonal dl_1 < ... < dl_m.
+ *  \param[in]  q     Coupling vector entries; all must be nonzero.
+ *  \param[in]  nu    The m + 1 arrowhead eigenvalues, in ascending order.
+ *  \param[out] A     Assembled orthogonal stage, row i associated with eigenvalue nu_i.
  */
 static void arrow_stage(int m, double rho, const double *dl, const double *q, const double *nu, double A[4][5])
 {
@@ -292,10 +396,23 @@ static void arrow_stage(int m, double rho, const double *dl, const double *q, co
     }
 }
 
+/* ********************************************************************************************** */
+/*  Init                                                                                          */
+/* ********************************************************************************************** */
+
 /*!
- *  \brief Init function.
- * 
- *  Offline processing of the AR(1) KLT module for a given length and correlation coefficient.
+ *  \brief      Precompute all constants of the length-n AR(1) KLT at a given correlation coefficient.
+ *
+ *  \details
+ *  The routine evaluates the closed-form rotation angles and the roots of the cubic and quartic
+ *  characteristic equations of the requested Section-V module, and assembles the dense secular and
+ *  arrowhead stage matrices in their row-normalized Cauchy forms.  The call is intended for design time;
+ *  its cost is negligible and independent of any data.
+ *
+ *  \param[out] ctx   Plan structure to fill; must not be NULL.
+ *  \param[in]  n     Transform length, AR1KLT_NMIN <= n <= AR1KLT_NMAX.
+ *  \param[in]  rho   AR(1) correlation coefficient, 0 < rho < 1.
+ *  \return     0 on success; -1 when ctx is NULL or an argument is out of range.
  */
 int ar1klt_init(ar1klt_ctx *ctx, int n, double rho)
 {
@@ -423,13 +540,17 @@ int ar1klt_init(ar1klt_ctx *ctx, int n, double rho)
     return 0;
 }
 
-/*************************
- *
- *  Run-time processing
- *
- */
+/* ********************************************************************************************** */
+/*  Apply: literal stage chains                                                                   */
+/* ********************************************************************************************** */
 
-/*! Inner 3-point KLT stage (N = 3, 6, 7): x[3] -> g[3]. */
+/*!
+ *  \brief      Inner 3-point KLT stage shared by the modules for N = 3, 6, and 7.
+ * 
+ *  \param[in]  phi3   Rotation angle of the stage, phi3 = arctan(2 sqrt(2) / rho) / 2.
+ *  \param[in]  x      Three input values.
+ *  \param[out] g      Three output values, in ascending generator-eigenvalue order of the stage.
+ */
 static void w3_apply(double phi3, const double *x, double *g)
 {
     double c = cos(phi3), s = sin(phi3);
@@ -438,7 +559,14 @@ static void w3_apply(double phi3, const double *x, double *g)
     rot(c, s, u, x[1], &g[0], &g[2]);
 }
 
-/*! Inner 4-point KLT stage (N = 4, 8): x[4] -> g[4]. */
+/*!
+ *  \brief      Inner 4-point KLT stage shared by the modules for N = 4 and 8.
+ * 
+ *  \param[in]  phi_s   Sum-branch rotation angle.
+ *  \param[in]  phi_a   Difference-branch rotation angle.
+ *  \param[in]  x       Four input values.
+ *  \param[out] g       Four output values, in ascending generator-eigenvalue order of the stage.
+ */
 static void w4_apply(double phi_s, double phi_a, const double *x, double *g)
 {
     double cs = cos(phi_s), ss = sin(phi_s);
@@ -451,8 +579,16 @@ static void w4_apply(double phi_s, double phi_a, const double *x, double *g)
     rot(ca, sa, d0, d1, &g[1], &g[3]);
 }
 
-/*! Dense m x m stage: y = Q x. */
-static void dense_apply(int m, const double Q[4][4], const double *x, double *y)
+/*!
+ *  \brief      Apply a dense square stage: y = Q x.
+ * 
+ *  \param[in]  m   Stage order.
+ *  \param[in]  Q   Stage matrix, stored in the fixed-size plan array.
+ *  \param[in]  x   Input vector of m values.
+ *  \param[out] y   Output vector of m values.
+ */
+static void dense_apply(int m, const double Q[4][4],
+                        const double *x, double *y)
 {
     int i, j;
     for (i = 0; i < m; i++) {
@@ -462,8 +598,17 @@ static void dense_apply(int m, const double Q[4][4], const double *x, double *y)
     }
 }
 
-/*! Arrowhead (m+1) x (m+1) stage: y = A (x, c). */
-static void arrow_apply(int m, const double A[4][5], const double *x, double c, double *y)
+/*!
+ *  \brief      Apply an arrowhead stage to a shaft vector and the center sample: y = A (x, c).
+ * 
+ *  \param[in]  m   Number of shaft entries (the stage has order m + 1).
+ *  \param[in]  A   Stage matrix, stored in the fixed-size plan array.
+ *  \param[in]  x   Shaft input vector of m values.
+ *  \param[in]  c   Center sample, entering as the last input coordinate.
+ *  \param[out] y   Output vector of m + 1 values.
+ */
+static void arrow_apply(int m, const double A[4][5],
+                        const double *x, double c, double *y)
 {
     int i, j;
     for (i = 0; i < m + 1; i++) {
@@ -473,10 +618,17 @@ static void arrow_apply(int m, const double A[4][5], const double *x, double c, 
     }
 }
 
-/*! 
- *  \brief Apply the AR(1) KLT module to a vector x of length n, producing y. 
- * 
- *  Online processing of the AR(1) KLT module for a given length and correlation coefficient.
+/*!
+ *  \brief      Apply the precomputed short-length AR(1) KLT to one input block.
+ *
+ *  \details
+ *  The routine executes the stage chain of the corresponding Section-V module (butterflies, plane
+ *  rotations, and the small dense stages) exactly as printed in the paper.  The input and output arrays
+ *  must each hold ctx->n values and must not alias each other.
+ *
+ *  \param[in]  ctx   Plan previously filled by ar1klt_init().
+ *  \param[in]  x     Input block x_0, ..., x_{n-1}.
+ *  \param[out] y     Output KLT coefficients y_0, ..., y_{n-1}, ordered by decreasing variance.
  */
 void ar1klt_apply(const ar1klt_ctx *ctx, const double *x, double *y)
 {

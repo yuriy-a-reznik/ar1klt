@@ -1,14 +1,16 @@
 # Doxygen configuration for AR1KLT
-PROJECT_NAME           = "AR1KLTs"
-PROJECT_BRIEF          = "Exact fast AR(1) KLT modules, N = 2..8 (C89)"
+PROJECT_NAME           = "AR1KLT"
+PROJECT_BRIEF          = "Exact fast AR(1) KLT: short-length modules (N = 2..8) and general-N recursion (C89)"
 OUTPUT_DIRECTORY       = docs
 INPUT                  = include src test README.md
 USE_MDFILE_AS_MAINPAGE = README.md
 FILE_PATTERNS          = *.h *.c *.md
 OPTIMIZE_OUTPUT_FOR_C  = YES
+ALIASES                = "license=\par License:\n"
 EXTRACT_ALL            = NO
 EXTRACT_STATIC         = YES
-JAVADOC_AUTOBRIEF      = YES
+JAVADOC_AUTOBRIEF      = NO
+QT_AUTOBRIEF           = NO
 GENERATE_LATEX         = NO
 GENERATE_HTML          = YES
 HTML_OUTPUT            = html
